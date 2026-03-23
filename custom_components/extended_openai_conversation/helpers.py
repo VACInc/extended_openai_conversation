@@ -6,6 +6,7 @@ from functools import partial
 import logging
 import re
 from typing import Any
+from urllib.parse import parse_qs
 
 from openai import AsyncAzureOpenAI, AsyncClient, AsyncOpenAI
 
@@ -27,15 +28,78 @@ _LOGGER = logging.getLogger(__name__)
 
 
 AZURE_DOMAIN_PATTERN = r"\.(openai\.azure\.com|azure-api\.net|services\.ai\.azure\.com)"
+MODEL_QUERY_PARAM_SESSION_KEYS = (
+    "session_key",
+    "openclaw_session_key",
+    "session",
+)
+
+
+def get_base_model_name(model: str) -> str:
+    """Return the model name without optional query-string overrides."""
+    base_model, _, _ = model.partition("?")
+    return base_model or model
+
+
+def parse_chat_model(model: str) -> tuple[str, dict[str, Any]]:
+    """Parse model-level request overrides from the chat model string.
+
+    Supports query-string style overrides appended to the model name. Example:
+    ``openclaw:main?session_key=agent:main:openai:ha-spark&user=ha-voice``
+
+    Supported query parameters:
+    - ``user`` → forwarded as the standard OpenAI ``user`` request field.
+    - ``session_key`` / ``openclaw_session_key`` / ``session`` → forwarded as
+      ``x-openclaw-session-key`` via ``extra_headers``.
+
+    Unknown parameters are ignored for forward compatibility.
+    """
+    base_model, separator, query = model.partition("?")
+    if not separator or not query:
+        return model, {}
+
+    request_options: dict[str, Any] = {}
+    query_params = parse_qs(query, keep_blank_values=False)
+
+    user_values = query_params.get("user")
+    if user_values and user_values[-1].strip():
+        request_options["user"] = user_values[-1].strip()
+
+    session_key: str | None = None
+    for key in MODEL_QUERY_PARAM_SESSION_KEYS:
+        values = query_params.get(key)
+        if values and values[-1].strip():
+            session_key = values[-1].strip()
+            break
+
+    if session_key:
+        request_options["extra_headers"] = {
+            "x-openclaw-session-key": session_key,
+        }
+
+    ignored_keys = sorted(
+        set(query_params)
+        - {"user", *MODEL_QUERY_PARAM_SESSION_KEYS}
+    )
+    if ignored_keys:
+        _LOGGER.debug(
+            "Ignoring unsupported chat_model query parameters for %s: %s",
+            base_model,
+            ignored_keys,
+        )
+
+    return base_model, request_options
 
 
 def get_model_config(model: str) -> dict[str, bool]:
     """Get model-specific parameter configuration."""
+    base_model = get_base_model_name(model)
+
     # Check patterns in order; first match wins
     for entry in MODEL_CONFIG_PATTERNS:
         pattern = str(entry["pattern"])
         entry_config = entry["config"]
-        if re.match(pattern, model, re.IGNORECASE):
+        if re.match(pattern, base_model, re.IGNORECASE):
             # Type assertion since we know the structure from MODEL_CONFIG_PATTERNS
             return (
                 dict(entry_config)
@@ -82,7 +146,7 @@ def is_azure_url(base_url: str | None) -> bool:
 
 def get_token_param_for_model(model: str) -> str:
     """Return the token parameter name for a model."""
-    model_lower = model.lower()
+    model_lower = get_base_model_name(model).lower()
     for entry in MODEL_TOKEN_PARAMETER_SUPPORT:
         if re.search(entry["pattern"], model_lower):
             return entry["token_param"]

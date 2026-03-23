@@ -49,7 +49,7 @@ from .const import (
 )
 from .exceptions import FunctionNotFound, ParseArgumentsFailed, TokenLengthExceededError
 from .functions import get_function
-from .helpers import get_model_config
+from .helpers import get_base_model_name, get_model_config, parse_chat_model
 
 if TYPE_CHECKING:
     from . import ExtendedOpenAIConfigEntry
@@ -174,7 +174,9 @@ class ExtendedOpenAIBaseLLMEntity(Entity):
             identifiers={(DOMAIN, subentry.subentry_id)},
             name=subentry.title,
             manufacturer="OpenAI",
-            model=subentry.data.get(CONF_CHAT_MODEL, DEFAULT_CHAT_MODEL),
+            model=get_base_model_name(
+                subentry.data.get(CONF_CHAT_MODEL, DEFAULT_CHAT_MODEL)
+            ),
             entry_type=dr.DeviceEntryType.SERVICE,
         )
 
@@ -194,7 +196,8 @@ class ExtendedOpenAIBaseLLMEntity(Entity):
     ) -> None:
         """Generate an answer for the chat log with streaming support."""
         options = self.subentry.data
-        model = options.get(CONF_CHAT_MODEL, DEFAULT_CHAT_MODEL)
+        raw_model = options.get(CONF_CHAT_MODEL, DEFAULT_CHAT_MODEL)
+        model, request_overrides = parse_chat_model(raw_model)
         max_function_calls = options.get(
             CONF_MAX_FUNCTION_CALLS_PER_CONVERSATION,
             DEFAULT_MAX_FUNCTION_CALLS_PER_CONVERSATION,
@@ -224,6 +227,7 @@ class ExtendedOpenAIBaseLLMEntity(Entity):
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        api_kwargs.update(request_overrides)
 
         # Add token limit parameter based on model support
         max_tokens = options.get(CONF_MAX_TOKENS, DEFAULT_MAX_TOKENS)
@@ -278,7 +282,7 @@ class ExtendedOpenAIBaseLLMEntity(Entity):
             if tools and 0 <= max_function_calls <= n_requests:
                 tool_kwargs["tool_choice"] = "none"
 
-            _LOGGER.info("Prompt for %s: %s", model, json.dumps(messages))
+            _LOGGER.info("Prompt for %s: %s", raw_model, json.dumps(messages))
 
             stream = await self._client.chat.completions.create(
                 messages=messages,

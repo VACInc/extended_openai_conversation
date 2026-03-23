@@ -85,6 +85,13 @@ Configure Extended OpenAI Conversation through the Options menu in your Voice As
     - `gpt-5-mini` - Fast and cost-effective
     - `gpt-4o-mini` - Balanced performance
     - Custom models from compatible providers
+
+    Optional request overrides can be appended as a query string. Example:
+    - `openclaw:main?session_key=agent:main:openai:ha-spark&user=ha-voice`
+
+    Supported query parameters:
+    - `user` → forwarded as the standard OpenAI `user` field
+    - `session_key`, `openclaw_session_key`, `session` → forwarded as `x-openclaw-session-key`
   </Accordion>
 
   <Accordion title="Max Tokens">
