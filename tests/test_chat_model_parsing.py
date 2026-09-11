@@ -63,3 +63,16 @@ def test_model_capabilities_ignore_query_string() -> None:
     assert get_token_param_for_model("gpt-5-mini?session=sticky-session") == (
         "max_completion_tokens"
     )
+
+
+def test_parse_chat_model_extra_body_json() -> None:
+    model = 'deepseek-v4-flash?extra_body={"chat_template_kwargs":{"thinking":false}}'
+    base_model, options = parse_chat_model(model)
+    assert base_model == "deepseek-v4-flash"
+    assert options == {"extra_body": {"chat_template_kwargs": {"thinking": False}}}
+
+
+def test_parse_chat_model_extra_body_invalid_is_ignored() -> None:
+    base_model, options = parse_chat_model("deepseek-v4-flash?extra_body=not-json")
+    assert base_model == "deepseek-v4-flash"
+    assert options == {}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import partial
+import json
 import logging
 import re
 from typing import Any
@@ -51,6 +52,8 @@ def parse_chat_model(model: str) -> tuple[str, dict[str, Any]]:
     - ``user`` → forwarded as the standard OpenAI ``user`` request field.
     - ``session_key`` / ``openclaw_session_key`` / ``session`` → forwarded as
       ``x-openclaw-session-key`` via ``extra_headers``.
+    - ``extra_body`` → URL-encoded JSON object merged into the request body via
+      ``extra_body`` (for example vLLM ``{"chat_template_kwargs": {"thinking": false}}``).
 
     Unknown parameters are ignored for forward compatibility.
     """
@@ -77,9 +80,26 @@ def parse_chat_model(model: str) -> tuple[str, dict[str, Any]]:
             "x-openclaw-session-key": session_key,
         }
 
+    extra_body_values = query_params.get("extra_body")
+    if extra_body_values and extra_body_values[-1].strip():
+        try:
+            extra_body = json.loads(extra_body_values[-1])
+        except ValueError:
+            _LOGGER.warning(
+                "Ignoring chat_model extra_body for %s: not valid JSON", base_model
+            )
+        else:
+            if isinstance(extra_body, dict) and extra_body:
+                request_options["extra_body"] = extra_body
+            else:
+                _LOGGER.warning(
+                    "Ignoring chat_model extra_body for %s: expected a JSON object",
+                    base_model,
+                )
+
     ignored_keys = sorted(
         set(query_params)
-        - {"user", *MODEL_QUERY_PARAM_SESSION_KEYS}
+        - {"user", "extra_body", *MODEL_QUERY_PARAM_SESSION_KEYS}
     )
     if ignored_keys:
         _LOGGER.debug(
