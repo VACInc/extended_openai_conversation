@@ -253,6 +253,14 @@ CONF_PAYLOAD_TEMPLATE = "payload_template"
 CONF_ADVANCED_OPTIONS = "advanced_options"
 DEFAULT_ADVANCED_OPTIONS = False
 
+# Voice follow-up listening after an assistant reply.
+# Missing/unknown values behave as "off" so existing subentries do not reopen the mic.
+CONF_FOLLOW_UP_MODE = "follow_up_mode"
+FOLLOW_UP_MODE_OFF = "off"
+FOLLOW_UP_MODE_AUTO = "auto"
+DEFAULT_FOLLOW_UP_MODE = FOLLOW_UP_MODE_OFF
+FOLLOW_UP_MODE_OPTIONS = [FOLLOW_UP_MODE_OFF, FOLLOW_UP_MODE_AUTO]
+
 # Model-specific parameter configurations
 # Default configuration for standard models (gpt-4, gpt-4o, etc.)
 DEFAULT_MODEL_CONFIG = {

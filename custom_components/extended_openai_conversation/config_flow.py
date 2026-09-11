@@ -41,6 +41,7 @@ from .const import (
     CONF_CHAT_MODEL,
     CONF_CONTEXT_THRESHOLD,
     CONF_CONTEXT_TRUNCATE_STRATEGY,
+    CONF_FOLLOW_UP_MODE,
     CONF_FUNCTION_TOOLS,
     CONF_MAX_FUNCTION_CALLS_PER_CONVERSATION,
     CONF_MAX_TOKENS,
@@ -64,6 +65,7 @@ from .const import (
     DEFAULT_CONTEXT_THRESHOLD,
     DEFAULT_CONTEXT_TRUNCATE_STRATEGY,
     DEFAULT_CONVERSATION_NAME,
+    DEFAULT_FOLLOW_UP_MODE,
     DEFAULT_MAX_FUNCTION_CALLS_PER_CONVERSATION,
     DEFAULT_MAX_TOKENS,
     DEFAULT_NAME,
@@ -75,6 +77,7 @@ from .const import (
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
     DOMAIN,
+    FOLLOW_UP_MODE_OPTIONS,
     REASONING_EFFORT_OPTIONS,
     SERVICE_TIER_OPTIONS,
 )
@@ -124,6 +127,7 @@ DEFAULT_OPTIONS = types.MappingProxyType(
         CONF_CONTEXT_TRUNCATE_STRATEGY: DEFAULT_CONTEXT_TRUNCATE_STRATEGY,
         CONF_SHORTEN_TOOL_CALL_ID: DEFAULT_SHORTEN_TOOL_CALL_ID,
         CONF_ADVANCED_OPTIONS: DEFAULT_ADVANCED_OPTIONS,
+        CONF_FOLLOW_UP_MODE: DEFAULT_FOLLOW_UP_MODE,
     }
 )
 
@@ -381,6 +385,21 @@ class ExtendedOpenAISubentryFlowHandler(ConfigSubentryFlow):
                 default=DEFAULT_SHORTEN_TOOL_CALL_ID,
             )
         ] = BooleanSelector()
+
+        schema[
+            vol.Optional(
+                CONF_FOLLOW_UP_MODE,
+                default=DEFAULT_FOLLOW_UP_MODE,
+            )
+        ] = SelectSelector(
+            SelectSelectorConfig(
+                options=[
+                    SelectOptionDict(value=opt, label=opt.capitalize())
+                    for opt in FOLLOW_UP_MODE_OPTIONS
+                ],
+                mode=SelectSelectorMode.DROPDOWN,
+            )
+        )
 
         return self.async_show_form(
             step_id="advanced",

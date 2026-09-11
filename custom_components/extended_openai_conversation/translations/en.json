@@ -49,10 +49,12 @@
                         "top_p": "Top P",
                         "reasoning_effort": "Reasoning effort",
                         "service_tier": "Service tier",
-                        "shorten_tool_call_id": "Shorten tool call IDs"
+                        "shorten_tool_call_id": "Shorten tool call IDs",
+                        "follow_up_mode": "Follow-up listening"
                     },
                     "data_description": {
-                        "shorten_tool_call_id": "Required for Mistral AI cloud API compatibility. Enable only if your provider requires short (9-character) tool call IDs. Keep disabled for OpenAI and most other providers."
+                        "shorten_tool_call_id": "Required for Mistral AI cloud API compatibility. Enable only if your provider requires short (9-character) tool call IDs. Keep disabled for OpenAI and most other providers.",
+                        "follow_up_mode": "When Auto, Home Assistant reopens the satellite microphone if the assistant reply ends with a question. Off (the default) never continues listening."
                     }
                 }
             }

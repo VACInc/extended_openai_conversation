@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import logging
 from pathlib import Path
 from typing import Any, Literal
@@ -27,14 +28,17 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import ExtendedOpenAIConfigEntry
 from .const import (
+    CONF_FOLLOW_UP_MODE,
     CONF_FUNCTION_TOOLS,
     CONF_PROMPT,
     CONF_SKILLS,
     DEFAULT_CONF_FUNCTION_TOOLS,
+    DEFAULT_FOLLOW_UP_MODE,
     DEFAULT_PROMPT,
     DEFAULT_WORKING_DIRECTORY,
     DOMAIN,
     EVENT_CONVERSATION_FINISHED,
+    FOLLOW_UP_MODE_AUTO,
 )
 from .entity import ExtendedOpenAIBaseLLMEntity
 from .exceptions import FunctionLoadFailed, FunctionNotFound, InvalidFunction
@@ -43,6 +47,18 @@ from .helpers import get_exposed_entities
 from .skills import Skill, SkillManager
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def should_continue_conversation(
+    subentry_data: Mapping[str, Any], chat_log_continue: bool
+) -> bool:
+    """Return whether the satellite should keep listening after this reply.
+
+    Follow-up is opt-in. Missing or unknown ``follow_up_mode`` values behave as
+    ``off`` so existing subentries do not reopen the microphone.
+    """
+    mode = subentry_data.get(CONF_FOLLOW_UP_MODE, DEFAULT_FOLLOW_UP_MODE)
+    return mode == FOLLOW_UP_MODE_AUTO and chat_log_continue
 
 
 async def async_setup_entry(
@@ -187,7 +203,9 @@ class ExtendedOpenAIAgentEntity(
         return ConversationResult(
             response=intent_response,
             conversation_id=chat_log.conversation_id,
-            continue_conversation=chat_log.continue_conversation,
+            continue_conversation=should_continue_conversation(
+                self.subentry.data, chat_log.continue_conversation
+            ),
         )
 
     def _build_system_prompt(
