@@ -59,6 +59,99 @@ _LOGGER = logging.getLogger(__name__)
 # Max number of back and forth with the LLM to generate a response
 MAX_TOOL_ITERATIONS = 20
 
+# HA chat_log.async_add_delta_content_stream is append-only per assistant
+# message: thinking, then content, then tool_calls. A new ``role`` starts a
+# new message. Kind regressions (content after tool_calls, thinking after
+# content) must open a new assistant message instead of raising.
+_KIND_NONE = 0
+_KIND_THINKING = 1
+_KIND_CONTENT = 2
+_KIND_TOOL_CALLS = 3
+_KIND_NAMES = {
+    _KIND_NONE: "none",
+    _KIND_THINKING: "thinking",
+    _KIND_CONTENT: "content",
+    _KIND_TOOL_CALLS: "tool_calls",
+}
+
+
+def _delta_extra_field(delta: Any, name: str) -> Any:
+    """Read a possibly vendor-specific field from a chat completion delta."""
+    value = getattr(delta, name, None)
+    if value:
+        return value
+    extra = getattr(delta, "model_extra", None)
+    if isinstance(extra, dict):
+        value = extra.get(name)
+        if value:
+            return value
+    return None
+
+
+def _reasoning_text(delta: Any) -> str:
+    """Extract reasoning/thinking text from an OpenAI-compatible delta."""
+    for name in ("reasoning_content", "reasoning"):
+        value = _delta_extra_field(delta, name)
+        if isinstance(value, str) and value:
+            return value
+        if isinstance(value, dict):
+            for key in ("content", "text", "reasoning"):
+                nested = value.get(key)
+                if isinstance(nested, str) and nested:
+                    return nested
+    return ""
+
+
+def _content_text(delta: Any) -> str:
+    """Return assistant visible content as a string, if present."""
+    content_value = getattr(delta, "content", None)
+    if not content_value:
+        return ""
+    if not isinstance(content_value, str):
+        _LOGGER.warning(
+            "Received non-string content from API: %s (type: %s)",
+            content_value,
+            type(content_value),
+        )
+        content_value = str(content_value)
+    return content_value
+
+
+def _tool_call_entries_complete(current_tool_calls: dict[int, dict[str, Any]]) -> bool:
+    """Return True when every accumulated tool call has parseable arguments."""
+    if not current_tool_calls:
+        return False
+    for tool_call in current_tool_calls.values():
+        if not tool_call["id"] or not tool_call["name"]:
+            return False
+        try:
+            json.loads(tool_call["arguments"] or "{}")
+        except json.JSONDecodeError:
+            return False
+    return True
+
+
+def _parse_tool_calls(
+    current_tool_calls: dict[int, dict[str, Any]],
+) -> list[llm.ToolInput]:
+    """Convert accumulated tool-call fragments into ToolInput values."""
+    tool_calls_list: list[llm.ToolInput] = []
+    for idx in sorted(current_tool_calls.keys()):
+        tool_call = current_tool_calls[idx]
+        try:
+            args = json.loads(tool_call["arguments"] or "{}")
+        except json.JSONDecodeError as err:
+            raise ParseArgumentsFailed(tool_call["arguments"]) from err
+        tool_calls_list.append(
+            llm.ToolInput(
+                id=tool_call["id"],
+                tool_name=tool_call["name"],
+                tool_args=args,
+                external=True,  # Mark as external so ChatLog doesn't try to execute
+            )
+        )
+    return tool_calls_list
+
 
 def _shorten_tool_call_id(tool_call_id: str) -> str:
     """Shorten tool call ID to exactly 9 alphanumeric characters as Mistral requires."""
@@ -342,17 +435,56 @@ class ExtendedOpenAIBaseLLMEntity(Entity):
     ) -> AsyncGenerator[
         conversation.AssistantContentDeltaDict | conversation.ToolResultContentDeltaDict
     ]:
-        """Transform OpenAI stream to Home Assistant format."""
+        """Transform OpenAI stream to Home Assistant format.
+
+        Compatible backends (DeepSeek, vLLM, OpenClaw) may interleave
+        reasoning, visible content, and tool calls. Home Assistant's chat log
+        requires an append-only sequence per assistant message, so this
+        normalizer starts a new assistant message when the content kind would
+        otherwise go backwards.
+        """
         current_tool_calls: dict[int, dict[str, Any]] = {}
-        first_chunk = True
+        current_kind = _KIND_NONE
+        started = False
+
+        def start_message() -> conversation.AssistantContentDeltaDict:
+            nonlocal current_kind, started
+            started = True
+            current_kind = _KIND_NONE
+            return {"role": "assistant"}
+
+        async def emit(
+            kind: int, payload: conversation.AssistantContentDeltaDict
+        ) -> AsyncGenerator[conversation.AssistantContentDeltaDict]:
+            nonlocal current_kind
+            if not started:
+                yield start_message()
+            if current_kind and kind < current_kind:
+                _LOGGER.debug(
+                    "Normalized stream: starting a new assistant message to emit %s after %s",
+                    _KIND_NAMES[kind],
+                    _KIND_NAMES[current_kind],
+                )
+                yield start_message()
+            current_kind = max(current_kind, kind)
+            yield payload
+
+        async def flush_tool_calls() -> AsyncGenerator[
+            conversation.AssistantContentDeltaDict
+        ]:
+            nonlocal current_tool_calls
+            if not current_tool_calls:
+                return
+            tool_calls_list = _parse_tool_calls(current_tool_calls)
+            current_tool_calls = {}
+            if tool_calls_list:
+                async for item in emit(
+                    _KIND_TOOL_CALLS, {"tool_calls": tool_calls_list}
+                ):
+                    yield item
 
         async for chunk in result:
             _LOGGER.debug("Received chunk: %s", chunk)
-
-            # Signal new assistant message on first chunk
-            if first_chunk:
-                yield {"role": "assistant"}
-                first_chunk = False
 
             if not chunk.choices:
                 # Track usage from final chunk if available
@@ -373,19 +505,26 @@ class ExtendedOpenAIBaseLLMEntity(Entity):
 
             choice = chunk.choices[0]
             delta = choice.delta
+            reasoning = _reasoning_text(delta)
+            content_value = _content_text(delta)
 
-            if delta.content:
-                # Ensure content is a string (Mistral might return unexpected types)
-                content_value = delta.content
-                if not isinstance(content_value, str):
-                    _LOGGER.warning(
-                        "Received non-string content from API: %s (type: %s)",
-                        content_value,
-                        type(content_value),
-                    )
-                    content_value = str(content_value) if content_value else ""
-                if content_value:
-                    yield {"content": content_value}
+            if reasoning:
+                if current_tool_calls and _tool_call_entries_complete(
+                    current_tool_calls
+                ):
+                    async for item in flush_tool_calls():
+                        yield item
+                async for item in emit(_KIND_THINKING, {"thinking_content": reasoning}):
+                    yield item
+
+            if content_value:
+                if current_tool_calls and _tool_call_entries_complete(
+                    current_tool_calls
+                ):
+                    async for item in flush_tool_calls():
+                        yield item
+                async for item in emit(_KIND_CONTENT, {"content": content_value}):
+                    yield item
 
             if delta.tool_calls:
                 for tool_call_delta in delta.tool_calls:
@@ -408,25 +547,8 @@ class ExtendedOpenAIBaseLLMEntity(Entity):
                             )
 
             if current_tool_calls and (choice.finish_reason in {"tool_calls", "stop"}):
-                # Yield all accumulated tool calls (marked as external since we handle them ourselves)
-                tool_calls_list = []
-                for idx in sorted(current_tool_calls.keys()):
-                    tool_call = current_tool_calls[idx]
-                    try:
-                        args = json.loads(tool_call["arguments"])
-                    except json.JSONDecodeError as err:
-                        raise ParseArgumentsFailed(tool_call["arguments"]) from err
-                    tool_calls_list.append(
-                        llm.ToolInput(
-                            id=tool_call["id"],
-                            tool_name=tool_call["name"],
-                            tool_args=args,
-                            external=True,  # Mark as external so ChatLog doesn't try to execute
-                        )
-                    )
-                if tool_calls_list:
-                    yield {"tool_calls": tool_calls_list}
-                current_tool_calls.clear()
+                async for item in flush_tool_calls():
+                    yield item
             if choice.finish_reason == "length":
                 raise TokenLengthExceededError(
                     self.subentry.data.get(CONF_MAX_TOKENS, DEFAULT_MAX_TOKENS)
@@ -434,6 +556,9 @@ class ExtendedOpenAIBaseLLMEntity(Entity):
 
             if choice.finish_reason == "stop":
                 break
+
+        async for item in flush_tool_calls():
+            yield item
 
     async def _execute_function_tool(
         self,
